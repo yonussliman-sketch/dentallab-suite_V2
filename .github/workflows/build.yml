@@ -26,37 +26,51 @@ jobs:
           cat << 'EOF' > /tmp/valid_gs.json
           {
             "project_info": {
-              "project_number": "000000000000",
-              "project_id": "dentallabsuite-temp"
+              "project_number": "45982680579",
+              "project_id": "dentallab-suite",
+              "storage_bucket": "dentallab-suite.firebasestorage.app"
             },
             "client": [
               {
                 "client_info": {
-                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                  "mobilesdk_app_id": "1:45982680579:android:cf1f1ee79233ce6f3bf036",
                   "android_client_info": {
                     "package_name": "com.dentallab.clinic"
                   }
                 },
+                "oauth_client": [],
                 "api_key": [
                   {
-                    "current_key": "AIzaSyDummyKeyForBuildOnly1234567890"
+                    "current_key": "AIzaSyBRVrj5DvXbDn8bYkr2VnbjqRuR0n6zBpA"
                   }
-                ]
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
               },
               {
                 "client_info": {
-                  "mobilesdk_app_id": "1:000000000000:android:1111111111111111",
+                  "mobilesdk_app_id": "1:45982680579:android:629183486fcc0e4e3bf036",
                   "android_client_info": {
                     "package_name": "com.dentallab.lab"
                   }
                 },
+                "oauth_client": [],
                 "api_key": [
                   {
-                    "current_key": "AIzaSyDummyKeyForBuildOnly1234567890"
+                    "current_key": "AIzaSyBRVrj5DvXbDn8bYkr2VnbjqRuR0n6zBpA"
                   }
-                ]
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
               }
-            ]
+            ],
+            "configuration_version": "1"
           }
           EOF
           for m in clinic lab; do
