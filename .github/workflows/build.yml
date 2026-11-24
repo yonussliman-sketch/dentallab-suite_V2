@@ -87,220 +87,47 @@ jobs:
 
       - name: Patch NewCaseActivity for Storage fallback
         run: |
-          TARGET=$(find "$P" -path "*/clinic/src/main/java/com/dentallab/clinic/NewCaseActivity.java" | head -n1)
-          if [ -n "$TARGET" ]; then
-            cat << 'JAVA_EOF' > "$TARGET"
-package com.dentallab.clinic;
-import android.content.Intent;
-import android.net.Uri;
-import android.os.Bundle;
-import android.view.ViewGroup;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.Spinner;
-import android.widget.TextView;
-import androidx.activity.OnBackPressedCallback;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.appcompat.app.AppCompatActivity;
-import com.dentallab.core.*;
-import com.google.firebase.firestore.DocumentReference;
-import java.util.ArrayList;
-import java.util.List;
-
-public class NewCaseActivity extends AppCompatActivity {
-    private final List<Uri> uris = new ArrayList<>();
-    private final List<String> names = new ArrayList<>();
-    private final List<Long> sizes = new ArrayList<>();
-    private TeethChartView chart;
-    private LinearLayout filesBox;
-    private TextView tvSelected, tvProgress;
-    private ProgressBar progress;
-    private Button btnSave, btnSaveAdd;
-    private Spinner spWork, spShade;
-    private EditText etRef, etDue, etNotes;
-    private CheckBox cbUrgent;
-    private boolean uploading;
-    private int failedUploads;
-
-    private final OnBackPressedCallback guard = new OnBackPressedCallback(false) {
-        @Override public void handleOnBackPressed() { Ui.toast(NewCaseActivity.this, R.string.msg_wait_upload); }
-    };
-
-    private final ActivityResultLauncher<String[]> picker = registerForActivityResult(
-            new ActivityResultContracts.OpenMultipleDocuments(), list -> {
-                if (list == null) return;
-                for (Uri u : list) {
-                    try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
-                    catch (Exception ignored) { }
-                    uris.add(u);
-                    names.add(FileUtil.displayName(this, u));
-                    sizes.add(FileUtil.sizeOf(this, u));
-                }
-                renderFiles();
-            });
-
-    @Override protected void onCreate(Bundle b) {
-        super.onCreate(b);
-        setContentView(R.layout.activity_new_case);
-        Edge.apply(this);
-        getOnBackPressedDispatcher().addCallback(this, guard);
-        setTitle(R.string.btn_new_case);
-        if (getSupportActionBar() != null) getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-
-        etRef = findViewById(R.id.etRef);
-        etDue = findViewById(R.id.etDue);
-        etNotes = findViewById(R.id.etNotes);
-        cbUrgent = findViewById(R.id.cbUrgent);
-        spWork = findViewById(R.id.spWork);
-        spShade = findViewById(R.id.spShade);
-        chart = findViewById(R.id.teeth);
-        filesBox = findViewById(R.id.filesBox);
-        tvSelected = findViewById(R.id.tvSelected);
-        tvProgress = findViewById(R.id.tvProgress);
-        progress = findViewById(R.id.progress);
-        btnSave = findViewById(R.id.btnSave);
-        btnSaveAdd = findViewById(R.id.btnSaveAdd);
-
-        spWork.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                getResources().getStringArray(R.array.work_types)));
-        spShade.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, Ui.shades(this)));
-        etDue.setOnClickListener(v -> Ui.pickDate(this, etDue::setText));
-        chart.setListener(csv -> tvSelected.setText(csv.isEmpty() ? getString(R.string.teeth_none)
-                : getString(R.string.teeth_selected, csv.replace(",", ", "))));
-        findViewById(R.id.btnUpper).setOnClickListener(v -> chart.toggleJaw(true));
-        findViewById(R.id.btnLower).setOnClickListener(v -> chart.toggleJaw(false));
-        findViewById(R.id.btnClear).setOnClickListener(v -> chart.clear());
-        findViewById(R.id.btnFiles).setOnClickListener(v -> picker.launch(new String[]{"*/*"}));
-        btnSave.setOnClickListener(v -> save(false));
-        btnSaveAdd.setOnClickListener(v -> save(true));
-    }
-
-    private void renderFiles() {
-        filesBox.removeAllViews();
-        for (int i = 0; i < uris.size(); i++) {
-            final int idx = i;
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(0, 10, 0, 10);
-            TextView t = new TextView(this);
-            t.setText("\uD83D\uDCC4 " + names.get(i) + "  (" + FileUtil.human(sizes.get(i)) + ")");
-            t.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            TextView x = new TextView(this);
-            x.setText("  \u2715  ");
-            x.setTextSize(18);
-            x.setOnClickListener(v -> { if (!uploading) { uris.remove(idx); names.remove(idx); sizes.remove(idx); renderFiles(); } });
-            row.addView(t);
-            row.addView(x);
-            filesBox.addView(row);
-        }
-    }
-
-    private void setBusy(boolean on) {
-        uploading = on;
-        guard.setEnabled(on);
-        btnSave.setEnabled(!on);
-        btnSaveAdd.setEnabled(!on);
-        progress.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
-        tvProgress.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
-    }
-
-    private void save(boolean addAnother) {
-        final String teeth = chart.getSelectedCsv();
-        if (teeth.isEmpty()) { Ui.toast(this, R.string.err_teeth); return; }
-        failedUploads = 0;
-        final DocumentReference ref = Repo.db().collection("cases").document();
-        final CaseItem k = new CaseItem();
-        k.clinicId = Repo.uid();
-        k.clinicName = Profile.name(this);
-        k.clinicPhone = Profile.e164(this);
-        k.patientRef = etRef.getText().toString().trim();
-        k.workType = spWork.getSelectedItemPosition();
-        k.teeth = teeth;
-        k.shade = spShade.getSelectedItemPosition() == 0 ? "" : (String) spShade.getSelectedItem();
-        k.dueDate = etDue.getText().toString();
-        k.notes = etNotes.getText().toString().trim();
-        k.urgent = cbUrgent.isChecked();
-        k.status = 1;
-        k.createdAt = System.currentTimeMillis();
-        k.updatedAt = k.createdAt;
-        k.files = new ArrayList<>();
-        setBusy(true);
-        uploadNext(0, ref, k, addAnother);
-    }
-
-    private void uploadNext(final int i, final DocumentReference ref, final CaseItem k, final boolean addAnother) {
-        if (i >= uris.size()) {
-            if (failedUploads > 0) {
-                String tag = "[ملفات بانتظار رفع Storage: " + failedUploads + "]";
-                k.notes = (k.notes == null || k.notes.isEmpty()) ? tag : (k.notes + "\n" + tag);
-            }
-            tvProgress.setText(R.string.msg_sending);
-            ref.set(k).addOnSuccessListener(x -> {
-                setBusy(false);
-                if (failedUploads > 0) {
-                    Ui.toast(this, getString(R.string.toast_sent) + " (تم حفظ الحالة في Firestore رغم تعذّر رفع بعض الملفات)");
-                } else {
-                    Ui.toast(this, R.string.toast_sent);
-                }
-                if (addAnother) resetForm(); else finish();
-            }).addOnFailureListener(e -> {
-                setBusy(false);
-                Ui.toast(this, getString(R.string.err_save, e.getLocalizedMessage()));
-            });
-            return;
-        }
-        tvProgress.setText(getString(R.string.msg_uploading, i + 1, uris.size(), names.get(i)));
-        progress.setProgress(0);
-        String path = "cases/" + Repo.uid() + "/" + ref.getId() + "/" + i + "_" + FileUtil.safe(names.get(i));
-        try {
-            FileUtil.upload(uris.get(i), path, names.get(i), sizes.get(i), progress::setProgress, (f, err) -> {
-                if (err != null || f == null) {
-                    failedUploads++;
-                    CaseFile fallback = new CaseFile();
-                    fallback.name = names.get(i);
-                    fallback.path = "pending_storage:" + path;
-                    fallback.size = sizes.get(i);
-                    k.files.add(fallback);
-                    uploadNext(i + 1, ref, k, addAnother);
-                    return;
-                }
+          python3 - << 'PYEOF'
+          import glob, os
+          matches = glob.glob(os.path.join(os.environ["P"], "**/clinic/src/main/java/com/dentallab/clinic/NewCaseActivity.java"), recursive=True)
+          if matches:
+              path = matches[0]
+              code = open(path, "r", encoding="utf-8").read()
+              if "failedUploads" not in code:
+                  code = code.replace("private boolean uploading;", "private boolean uploading;\n    private int failedUploads;")
+                  code = code.replace("final DocumentReference ref = Repo.db().collection(\"cases\").document();", "failedUploads = 0;\n        final DocumentReference ref = Repo.db().collection(\"cases\").document();")
+                  old_cb = """FileUtil.upload(uris.get(i), path, names.get(i), sizes.get(i), progress::setProgress, (f, err) -> {
+                if (err != null) { setBusy(false); Ui.toast(this, getString(R.string.err_upload, err.getLocalizedMessage())); return; }
                 k.files.add(f);
                 uploadNext(i + 1, ref, k, addAnother);
-            });
-        } catch (Exception ex) {
-            failedUploads++;
-            CaseFile fallback = new CaseFile();
-            fallback.name = names.get(i);
-            fallback.path = "pending_storage:" + path;
-            fallback.size = sizes.get(i);
-            k.files.add(fallback);
-            uploadNext(i + 1, ref, k, addAnother);
-        }
-    }
-
-    private void resetForm() {
-        chart.clear();
-        uris.clear(); names.clear(); sizes.clear();
-        renderFiles();
-        etRef.setText("");
-        etNotes.setText("");
-        cbUrgent.setChecked(false);
-        etRef.requestFocus();
-    }
-
-    @Override public boolean onSupportNavigateUp() {
-        if (uploading) { Ui.toast(this, R.string.msg_wait_upload); return true; }
-        finish();
-        return true;
-    }
-}
-JAVA_EOF
-          fi
+            });"""
+                  new_cb = """try {
+                FileUtil.upload(uris.get(i), path, names.get(i), sizes.get(i), progress::setProgress, (f, err) -> {
+                    if (err != null || f == null) {
+                        failedUploads++;
+                        CaseFile fb = new CaseFile();
+                        fb.name = names.get(i);
+                        fb.path = "pending_storage:" + path;
+                        fb.size = sizes.get(i);
+                        k.files.add(fb);
+                    } else {
+                        k.files.add(f);
+                    }
+                    uploadNext(i + 1, ref, k, addAnother);
+                });
+            } catch (Exception ex) {
+                failedUploads++;
+                CaseFile fb = new CaseFile();
+                fb.name = names.get(i);
+                fb.path = "pending_storage:" + path;
+                fb.size = sizes.get(i);
+                k.files.add(fb);
+                uploadNext(i + 1, ref, k, addAnother);
+            }"""
+                  code = code.replace(old_cb, new_cb)
+                  code = code.replace("tvProgress.setText(R.string.msg_sending);", "if (failedUploads > 0) { String tag = \"[ملفات بانتظار رفع Storage: \" + failedUploads + \"]\"; k.notes = (k.notes == null || k.notes.isEmpty()) ? tag : (k.notes + \"\\n\" + tag); }\n            tvProgress.setText(R.string.msg_sending);")
+                  open(path, "w", encoding="utf-8").write(code)
+          PYEOF
 
       - uses: actions/setup-java@v4
         with:
