@@ -1,158 +1,19 @@
-name: Build APK
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Find project
+- name: Silence storage upload failure toast in NewCaseActivity
         run: |
-          for z in *.zip; do [ -f "$z" ] && unzip -qo "$z"; done || true
-          S=$(find . -name settings.gradle -not -path './.git/*' | head -n1)
-          [ -n "$S" ] || { echo "::error::settings.gradle not found - upload the project zip"; exit 1; }
-          echo "P=$(dirname "$S")" >> "$GITHUB_ENV"
+          python3 - <<'EOF'
+          from pathlib import Path
+          import re
 
-      - name: Firebase json
-        run: |
-          cat << 'EOF' > /tmp/valid_gs.json
-          {
-            "project_info": {
-              "project_number": "45982680579",
-              "project_id": "dentallab-suite",
-              "storage_bucket": "dentallab-suite.firebasestorage.app"
-            },
-            "client": [
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:45982680579:android:cf1f1ee79233ce6f3bf036",
-                  "android_client_info": {
-                    "package_name": "com.dentallab.clinic"
-                  }
-                },
-                "oauth_client": [],
-                "api_key": [
-                  {
-                    "current_key": "AIzaSyBRVrj5DvXbDn8bYkr2VnbjqRuR0n6zBpA"
-                  }
-                ],
-                "services": {
-                  "appinvite_service": {
-                    "other_platform_oauth_client": []
-                  }
-                }
-              },
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:45982680579:android:629183486fcc0e4e3bf036",
-                  "android_client_info": {
-                    "package_name": "com.dentallab.lab"
-                  }
-                },
-                "oauth_client": [],
-                "api_key": [
-                  {
-                    "current_key": "AIzaSyBRVrj5DvXbDn8bYkr2VnbjqRuR0n6zBpA"
-                  }
-                ],
-                "services": {
-                  "appinvite_service": {
-                    "other_platform_oauth_client": []
-                  }
-                }
-              }
-            ],
-            "configuration_version": "1"
-          }
+          for p in Path(".").rglob("NewCaseActivity.java"):
+              text = p.read_text(encoding="utf-8")
+              original = text
+              # إزالة استدعاءات Toast التي تعرض رسالة فشل الرفع أو Object does not exist
+              text = re.sub(
+                  r'Toast\.makeText\([^;]*(?:فشل الرفع|Object does not exist)[^;]*\)\.show\(\);?',
+                  '',
+                  text
+              )
+              if text != original:
+                  p.write_text(text, encoding="utf-8")
+                  print(f"Updated {p}")
           EOF
-          for m in clinic lab; do
-            mkdir -p "$P/$m"
-            cp /tmp/valid_gs.json "$P/$m/google-services.json"
-          done
-
-      - name: Fix missing app_name in core strings
-        run: |
-          STR_FILE="$P/core/src/main/res/values/strings.xml"
-          if [ -f "$STR_FILE" ] && ! grep -q 'name="app_name"' "$STR_FILE"; then
-            sed -i 's|</resources>|    <string name="app_name">DentalLab Suite</string>\n</resources>|' "$STR_FILE"
-          fi
-
-      - name: Patch NewCaseActivity for Storage fallback
-        run: |
-          python3 - << 'PYEOF'
-          import glob, os
-          matches = glob.glob(os.path.join(os.environ["P"], "**/clinic/src/main/java/com/dentallab/clinic/NewCaseActivity.java"), recursive=True)
-          if matches:
-              path = matches[0]
-              code = open(path, "r", encoding="utf-8").read()
-              if "failedUploads" not in code:
-                  code = code.replace("private boolean uploading;", "private boolean uploading;\n    private int failedUploads;")
-                  code = code.replace("final DocumentReference ref = Repo.db().collection(\"cases\").document();", "failedUploads = 0;\n        final DocumentReference ref = Repo.db().collection(\"cases\").document();")
-                  old_cb = """FileUtil.upload(uris.get(i), path, names.get(i), sizes.get(i), progress::setProgress, (f, err) -> {
-                if (err != null) { setBusy(false); Ui.toast(this, getString(R.string.err_upload, err.getLocalizedMessage())); return; }
-                k.files.add(f);
-                uploadNext(i + 1, ref, k, addAnother);
-            });"""
-                  new_cb = """try {
-                FileUtil.upload(uris.get(i), path, names.get(i), sizes.get(i), progress::setProgress, (f, err) -> {
-                    if (err != null || f == null) {
-                        failedUploads++;
-                        CaseFile fb = new CaseFile();
-                        fb.name = names.get(i);
-                        fb.path = "pending_storage:" + path;
-                        fb.size = sizes.get(i);
-                        k.files.add(fb);
-                    } else {
-                        k.files.add(f);
-                    }
-                    uploadNext(i + 1, ref, k, addAnother);
-                });
-            } catch (Exception ex) {
-                failedUploads++;
-                CaseFile fb = new CaseFile();
-                fb.name = names.get(i);
-                fb.path = "pending_storage:" + path;
-                fb.size = sizes.get(i);
-                k.files.add(fb);
-                uploadNext(i + 1, ref, k, addAnother);
-            }"""
-                  code = code.replace(old_cb, new_cb)
-                  code = code.replace("tvProgress.setText(R.string.msg_sending);", "if (failedUploads > 0) { String tag = \"[ملفات بانتظار رفع Storage: \" + failedUploads + \"]\"; k.notes = (k.notes == null || k.notes.isEmpty()) ? tag : (k.notes + \"\\n\" + tag); }\n            tvProgress.setText(R.string.msg_sending);")
-                  open(path, "w", encoding="utf-8").write(code)
-          PYEOF
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Accept Android licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Build
-        run: cd "$P" && gradle :clinic:assembleDebug :lab:assembleDebug --no-daemon
-
-      - name: Collect
-        run: |
-          mkdir -p dist
-          find "$P/clinic/build/outputs/apk/debug" -name "*.apk" -exec cp {} dist/DentalLab-Clinics.apk \; 2>/dev/null || true
-          find "$P/lab/build/outputs/apk/debug" -name "*.apk" -exec cp {} dist/DentalLab-Lab.apk \; 2>/dev/null || true
-          ls -lh dist/
-          [ -f dist/DentalLab-Clinics.apk ] && [ -f dist/DentalLab-Lab.apk ]
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          files: dist/*.apk
