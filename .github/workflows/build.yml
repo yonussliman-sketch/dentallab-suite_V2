@@ -1,36 +1,72 @@
-name: Build DentalLab APKs
-
+name: Build APK
 on:
   push:
-    branches: [ main ]
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Find project
+        run: |
+          for z in *.zip; do [ -f "$z" ] && unzip -qo "$z"; done || true
+          S=$(find . -name settings.gradle -not -path './.git/*' | head -n1)
+          [ -n "$S" ] || { echo "::error::settings.gradle not found - upload the project zip"; exit 1; }
+          echo "P=$(dirname "$S")" >> "$GITHUB_ENV"
+      - name: Firebase json
+        env:
+          J: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          cd "$P"
+          [ -z "$J" ] || { echo "$J" > clinic/google-services.json; echo "$J" > lab/google-services.json; }
+          [ -f clinic/google-services.json ] || { echo "::error::google-services.json missing"; exit 1; }
+      - name: Check google-services.json
+        run: |
+          cd "$P"
+          python3 - <<'PY'
+          import json, re, sys
+          ok = True
+          for m in ("clinic", "lab"):
+              try:
+                  d = json.load(open(m + "/google-services.json"))
+                  pk = [c["client_info"]["android_client_info"]["package_name"] for c in d["client"]]
+                  key = d["client"][0]["api_key"][0]["current_key"]
+              except Exception as e:
+                  print("::error::google-services.json is not valid JSON or incomplete:", e)
+                  sys.exit(1)
+              print(m, "| project:", d["project_info"]["project_id"], "| apps:", pk, "| key:", key[:4] + "... length", len(key))
+              bucket = d["project_info"].get("storage_bucket", "")
+              print(m, "| storage bucket:", bucket or "MISSING")
+              if not bucket:
+                  print("::warning::storage_bucket is missing - files will be saved in Firestore instead of Storage.")
+              if not re.fullmatch(r"AIza[0-9A-Za-z_-]{35}", key):
+                  print("::error::API key is invalid or cut off. Download google-services.json again and paste ALL of it.")
+                  ok = False
+              for need in ("com.dentallab.clinic", "com.dentallab.lab"):
+                  if need not in pk:
+                      print("::error::app missing in the file:", need)
+                      ok = False
+          sys.exit(0 if ok else 1)
+          PY
       - uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '17'
-          distribution: 'temurin'
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
-      - run: chmod +x gradlew && ./gradlew assembleDebug
-      - run: |
-          mkdir -p release-apks
-          find . -path "*/build/outputs/apk/*" -name "*.apk" | while read apk; do
-            case "$apk" in
-              *clinics*|*Clinics*) cp "$apk" release-apks/DentalLab-Clinics.apk ;;
-              *lab*|*Lab*) cp "$apk" release-apks/DentalLab-Lab.apk ;;
-            esac
-          done
+        with:
+          gradle-version: '8.7'
+      - name: Build
+        run: cd "$P" && gradle :clinic:assembleDebug :lab:assembleDebug --no-daemon
+      - name: Collect
+        run: |
+          mkdir dist
+          cp "$P/clinic/build/outputs/apk/debug/clinic-debug.apk" dist/DentalLab-Clinics.apk
+          cp "$P/lab/build/outputs/apk/debug/lab-debug.apk" dist/DentalLab-Lab.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Build #${{ github.run_number }}
-          files: release-apks/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*.apk
